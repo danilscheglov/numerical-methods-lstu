@@ -13,11 +13,11 @@ from PyQt5.QtWidgets import (
     QRadioButton,
     QGroupBox,
     QFileDialog,
-    QSizePolicy,
     QSplitter,
 )
 from PyQt5.QtCore import Qt, QLocale
 from PyQt5.QtGui import QFont, QDoubleValidator
+from scipy.interpolate import CubicSpline
 
 
 class NumericalDiffWindow(QMainWindow):
@@ -125,16 +125,6 @@ class NumericalDiffWindow(QMainWindow):
         self.order_group.setLayout(order_layout)
         left_layout.addWidget(self.order_group)
 
-        self.h_input = QLineEdit()
-        self.h_input.setPlaceholderText("0.1")
-        self.h_input.setFixedHeight(35)
-        validator_h = QDoubleValidator()
-        validator_h.setLocale(QLocale("C"))
-        self.h_input.setValidator(validator_h)
-        self.h_input.setToolTip("Введите шаг h, например: 0.1")
-        left_layout.addWidget(QLabel("Начальный шаг h:"))
-        left_layout.addWidget(self.h_input)
-
         self.calculate_btn = QPushButton("Вычислить производную")
         self.calculate_btn.setFixedHeight(40)
         self.calculate_btn.setStyleSheet(
@@ -216,7 +206,6 @@ class NumericalDiffWindow(QMainWindow):
     def clear_fields(self):
         self.function_input.clear()
         self.x0_input.clear()
-        self.h_input.clear()
         self.table_input.clear()
         self.result_output.clear()
         self.analytical_radio.setChecked(True)
@@ -232,8 +221,10 @@ class NumericalDiffWindow(QMainWindow):
                 self.table_data = np.loadtxt(file_name)
                 self.result_output.setText("Данные успешно загружены из файла.\n")
                 return True
-            except:
-                self.result_output.setText("Ошибка загрузки таблицы из файла!\n")
+            except Exception as e:
+                self.result_output.setText(
+                    f"Ошибка загрузки таблицы из файла: {str(e)}\n"
+                )
                 self.table_data = None
                 return False
         return False
@@ -273,22 +264,18 @@ class NumericalDiffWindow(QMainWindow):
 
         if derivative_order == 1:
             if idx == 0:
-                return (-3 * y[idx] + 4 * y[idx + 1] - y[idx + 2]) / (
-                    2 * h
-                )  # Правая КРА
+                return (-3 * y[idx] + 4 * y[idx + 1] - y[idx + 2]) / (2 * h)
             elif idx == len(x) - 1:
-                return (3 * y[idx] - 4 * y[idx - 1] + y[idx - 2]) / (2 * h)  # Левая КРА
+                return (3 * y[idx] - 4 * y[idx - 1] + y[idx - 2]) / (2 * h)
             else:
-                return (y[idx + 1] - y[idx - 1]) / (2 * h)  # Центральная КРА
+                return (y[idx + 1] - y[idx - 1]) / (2 * h)
         elif derivative_order == 2:
             if idx == 0:
-                return (y[idx] - 2 * y[idx + 1] + y[idx + 2]) / (h**2)  # Правая КРА
+                return (y[idx] - 2 * y[idx + 1] + y[idx + 2]) / (h**2)
             elif idx == len(x) - 1:
-                return (y[idx] - 2 * y[idx - 1] + y[idx - 2]) / (h**2)  # Левая КРА
+                return (y[idx] - 2 * y[idx - 1] + y[idx - 2]) / (h**2)
             else:
-                return (y[idx + 1] - 2 * y[idx] + y[idx - 1]) / (
-                    h**2
-                )  # Центральная КРА
+                return (y[idx + 1] - 2 * y[idx] + y[idx - 1]) / (h**2)
         elif derivative_order == 3:
             if idx < 2 or idx > len(x) - 3:
                 raise ValueError(
@@ -305,26 +292,60 @@ class NumericalDiffWindow(QMainWindow):
             return (
                 y[idx + 2] - 4 * y[idx + 1] + 6 * y[idx] - 4 * y[idx - 1] + y[idx - 2]
             ) / (h**4)
-        elif derivative_order == 5:
-            if idx < 3 or idx > len(x) - 4:
-                raise ValueError("Недостаточно точек для вычисления пятой производной")
-            return (
-                y[idx + 3]
-                - 4 * y[idx + 2]
-                + 5 * y[idx + 1]
-                - 5 * y[idx - 1]
-                + 4 * y[idx - 2]
-                - y[idx - 3]
-            ) / (h**5)
         else:
             raise ValueError("Неподдерживаемый порядок производной")
+
+    def estimate_M(self, x0, h, order, func_str=None, x=None, y=None):
+        try:
+            if func_str:
+                x_vals = np.arange(x0 - h * 4, x0 + h * 4 + h, h)
+                self.eval_locals["x"] = x_vals
+                y_vals = eval(func_str, {"__builtins__": None}, self.eval_locals)
+            else:
+                x_vals = x
+                y_vals = y
+
+            if order == 1:
+                f3 = self.numerical_derivative(
+                    x_vals, y_vals, x0, h, order, derivative_order=3
+                )
+                return abs(f3)
+            else:
+                f4 = self.numerical_derivative(
+                    x_vals, y_vals, x0, h, order, derivative_order=4
+                )
+                return abs(f4)
+        except Exception as e:
+            raise ValueError(f"Не удалось оценить M: {str(e)}")
+
+    def optimal_h(self, order, x0, func_str=None, x=None, y=None, eps=1e-10):
+        h_initial = 1e-3
+        if func_str:
+            M = self.estimate_M(x0, h_initial, order, func_str=func_str)
+        else:
+            x_vals = np.arange(
+                x0 - h_initial * 4, x0 + h_initial * 4 + h_initial, h_initial
+            )
+            cs = CubicSpline(x, y)
+            y_vals = cs(x_vals)
+            M = self.estimate_M(x0, h_initial, order, x=x_vals, y=y_vals)
+
+        if M == 0:
+            return 1e-6
+
+        if order == 1:
+            h = (3 * eps / M) ** (1 / 3)
+        else:
+            h = 2 * (3 * eps / M) ** (1 / 4)
+
+        return max(h, 1e-6)
 
     def runge_error(self, x0, h, order, func_str=None, x=None, y=None):
         if func_str:
             x_h = np.arange(x0 - h * 4, x0 + h * 4 + h, h)
             idx_h = np.argmin(np.abs(x_h - x0))
             if not np.isclose(x_h[idx_h], x0, rtol=1e-5):
-                return 0
+                raise ValueError("Точка x0 не совпадает с узлом сетки для шага h")
             self.eval_locals["x"] = x_h
             y_h = eval(func_str, {"__builtins__": None}, self.eval_locals)
             d1 = self.numerical_derivative(
@@ -334,7 +355,7 @@ class NumericalDiffWindow(QMainWindow):
             x_2h = np.arange(x0 - 2 * h * 4, x0 + 2 * h * 4 + 2 * h, 2 * h)
             idx_2h = np.argmin(np.abs(x_2h - x0))
             if not np.isclose(x_2h[idx_2h], x0, rtol=1e-5):
-                return 0
+                raise ValueError("Точка x0 не совпадает с узлом сетки для шага 2h")
             self.eval_locals["x"] = x_2h
             y_2h = eval(func_str, {"__builtins__": None}, self.eval_locals)
             d2 = self.numerical_derivative(
@@ -345,22 +366,27 @@ class NumericalDiffWindow(QMainWindow):
 
             idx = np.argmin(np.abs(x - x0))
             if idx < 1 or idx > len(x) - 2:
-                return 0
+                raise ValueError(
+                    "Недостаточно точек для вычисления производной с шагом h"
+                )
 
-            x_2h = x[::2]
-            y_2h = y[::2]
-
+            x_2h = np.arange(x0 - 2 * h * 4, x0 + 2 * h * 4 + 2 * h, 2 * h)
             idx_2h = np.argmin(np.abs(x_2h - x0))
             if not np.isclose(x_2h[idx_2h], x0, rtol=1e-5):
-                return 0
+                raise ValueError("Точка x0 не совпадает с узлом сетки для шага 2h")
             if idx_2h < 1 or idx_2h > len(x_2h) - 2:
-                return 0
+                raise ValueError(
+                    "Недостаточно точек для вычисления производной с шагом 2h"
+                )
+
+            cs = CubicSpline(x, y)
+            y_2h = cs(x_2h)
 
             d2 = self.numerical_derivative(
                 x_2h, y_2h, x0, 2 * h, order, derivative_order=order
             )
 
-        return abs(d1 - d2) / 3
+        return abs(d1 - d2) / (2**order - 1)
 
     def residual_error(self, x, y, x0, h, order):
         try:
@@ -382,32 +408,47 @@ class NumericalDiffWindow(QMainWindow):
         self.result_output.clear()
 
         try:
+            if not self.x0_input.text().strip():
+                self.result_output.setText("Ошибка: укажите точку x0!\n")
+                return
             x0 = float(self.x0_input.text())
-            h = float(self.h_input.text())
+
             order = 1 if self.first_order_radio.isChecked() else 2
 
-            result = "1. ВХОДНЫЕ ДАННЫЕ:\n"
-            result += f"Способ задания: {'Аналитически' if self.analytical_radio.isChecked() else 'Таблично'}\n"
-            result += f"x0 = {x0}\n"
-            result += f"Порядок производной: {order}\n"
-            result += f"Начальный шаг h: {h}\n"
+            machine_eps = np.finfo(float).eps
+            E = machine_eps / 2
 
             if self.analytical_radio.isChecked():
+                result = "1. ВХОДНЫЕ ДАННЫЕ:\n"
+                result += f"Способ задания: Аналитически\n"
+                result += f"x0 = {x0:.6g}\n"
+                result += f"Порядок производной: {order}\n"
+
                 func_str = self.function_input.text()
                 if not func_str:
                     self.result_output.setText("Ошибка: укажите функцию!\n")
                     return
                 result += f"Функция: {func_str}\n"
+
+                h = self.optimal_h(order, x0, func_str=func_str, eps=E)
+                result += f"Автоматический шаг h: {h:.6g}\n"
                 result += "\n"
 
                 try:
-                    x = np.arange(x0 - h * 4, x0 + h * 4, h)
+                    x = np.arange(x0 - h * 4, x0 + h * 4 + h, h)
+                    idx = np.argmin(np.abs(x - x0))
+                    if not np.isclose(x[idx], x0, rtol=1e-5):
+                        self.result_output.setText(
+                            "Ошибка: точка x0 не совпадает с узлом сетки!\n"
+                        )
+                        return
+
                     self.eval_locals["x"] = x
                     y = eval(func_str, {"__builtins__": None}, self.eval_locals)
 
                     result += "2. ТАБЛИЦА ЗНАЧЕНИЙ ФУНКЦИИ:\n"
-                    result += f"x: [{', '.join([f'{xi:.1f}' for xi in x])}]\n"
-                    result += f"f(x): [{', '.join([f'{yi:.3f}' for yi in y])}]\n"
+                    result += f"x: [{', '.join([f'{xi:.6g}' for xi in x])}]\n"
+                    result += f"f(x): [{', '.join([f'{yi:.6g}' for yi in y])}]\n"
                     result += "\n"
 
                     derivative = self.numerical_derivative(
@@ -437,25 +478,46 @@ class NumericalDiffWindow(QMainWindow):
                     )
                     return
 
-                x = self.table_data[:, 0]
-                y = self.table_data[:, 1]
+                x_orig = self.table_data[:, 0]
+                y_orig = self.table_data[:, 1]
 
-                h_actual = x[1] - x[0]
-                if not np.allclose(np.diff(x), h_actual):
+                if not np.all(np.diff(x_orig) > 0):
+                    self.result_output.setText(
+                        "Ошибка: значения x в таблице должны быть упорядочены по возрастанию!\n"
+                    )
+                    return
+
+                h_actual = x_orig[1] - x_orig[0]
+                if not np.allclose(np.diff(x_orig), h_actual):
                     self.result_output.setText(
                         "Ошибка: сетка должна быть равномерной!\n"
                     )
                     return
 
-                if not np.isclose(h, h_actual):
-                    result += f"Внимание: шаг h из таблицы ({h_actual}) отличается от введённого ({h}). Используется шаг из таблицы.\n"
-                    h = h_actual
-
+                h = self.optimal_h(order, x0, x=x_orig, y=y_orig, eps=E)
+                h = max(h, h_actual)
+                h = h_actual * round(h / h_actual)
+                result = "1. ВХОДНЫЕ ДАННЫЕ:\n"
+                result += f"Способ задания: Таблично\n"
+                result += f"x0 = {x0:.6g}\n"
+                result += f"Порядок производной: {order}\n"
+                result += f"Автоматический шаг h: {h:.6g} (скорректированный под сетку таблицы)\n"
                 result += "\n"
 
+                x = np.arange(x0 - h * 4, x0 + h * 4 + h, h)
+                idx = np.argmin(np.abs(x - x0))
+                if not np.isclose(x[idx], x0, rtol=1e-5):
+                    self.result_output.setText(
+                        "Ошибка: точка x0 не совпадает с узлом новой сетки!\n"
+                    )
+                    return
+
+                cs = CubicSpline(x_orig, y_orig)
+                y = cs(x)
+
                 result += "2. ТАБЛИЦА ЗНАЧЕНИЙ ФУНКЦИИ:\n"
-                result += f"x: [{', '.join([f'{xi:.1f}' for xi in x])}]\n"
-                result += f"f(x): [{', '.join([f'{yi:.3f}' for yi in y])}]\n"
+                result += f"x: [{', '.join([f'{xi:.6g}' for xi in x])}]\n"
+                result += f"f(x): [{', '.join([f'{yi:.6g}' for yi in y])}]\n"
                 result += "\n"
 
                 derivative = self.numerical_derivative(
@@ -477,8 +539,10 @@ class NumericalDiffWindow(QMainWindow):
 
             self.result_output.setText(result)
 
-        except ValueError:
-            self.result_output.setText("Ошибка: проверьте входные данные!\n")
+        except ValueError as e:
+            self.result_output.setText(f"Ошибка: {str(e)}\n")
+        except Exception as e:
+            self.result_output.setText(f"Непредвиденная ошибка: {str(e)}\n")
 
 
 if __name__ == "__main__":
